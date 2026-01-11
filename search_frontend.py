@@ -7,7 +7,7 @@ import pandas as pd
 import os
 import re
 from operator import itemgetter
-from time import time
+from time import time  # time כבר מיובא כאן
 from pathlib import Path
 import pickle
 import math
@@ -31,26 +31,18 @@ app.config['JSONIFY_PRETTYPRINT_REGULAR'] = False
 BUCKET_NAME = '208129742'
 
 # השמות של התיקיות בתוך הבאקט
-REMOTE_BODY_INDEX_DIR = 'postings_gcp'  # התיקייה בבאקט שבה נמצא ה-index.pkl וה-bins
-REMOTE_PR_FILE = 'pr/pr_index.pkl'  # הקובץ של ה-PageRank בתוך הבאקט
-REMOTE_ID2TITLE_FILE = 'id2title.sqlite'  # קובץ המיפוי
+REMOTE_BODY_INDEX_DIR = 'postings_gcp'
+REMOTE_PR_FILE = 'pr/pr_index.pkl'
+REMOTE_ID2TITLE_FILE = 'id2title.sqlite'
 
 # תיקיות מקומיות (ב-Colab/GCP)
 LOCAL_BODY_INDEX_DIR = 'body_index_local'
 LOCAL_ID2TITLE_PATH = 'id2title.sqlite'
 
 
-# =========================================================================
-# HELPER FUNCTIONS
-# =========================================================================
-
 def setup_swap_memory():
-    """
-    מגדיר זיכרון וירטואלי (Swap) של 4GB כדי למנוע קריסות RAM.
-    """
     print("Setting up Swap Memory...", flush=True)
     try:
-        # בדיקה אם כבר קיים
         if os.path.exists('/swapfile'):
             print("Swapfile already exists. Skipping creation.", flush=True)
             return
@@ -65,9 +57,6 @@ def setup_swap_memory():
 
 
 def download_index_from_bucket(bucket_name, source_dir, dest_dir):
-    """
-    מוריד את כל קבצי האינדקס (pkl + bin) מהבאקט לדיסק המקומי.
-    """
     if not os.path.exists(dest_dir):
         os.makedirs(dest_dir)
 
@@ -79,11 +68,9 @@ def download_index_from_bucket(bucket_name, source_dir, dest_dir):
     count = 0
     for blob in blobs:
         if blob.name.endswith(".pkl") or blob.name.endswith(".bin"):
-            # חילוץ שם הקובץ בלבד (בלי התיקייה בבאקט)
             file_name = os.path.basename(blob.name)
             local_path = os.path.join(dest_dir, file_name)
 
-            # מורידים רק אם לא קיים כבר
             if not os.path.exists(local_path):
                 blob.download_to_filename(local_path)
             count += 1
@@ -106,9 +93,6 @@ def download_file_from_bucket(bucket_name, source_file, dest_file):
 
 
 def load_pagerank(bucket_name, remote_path):
-    """
-    טוען את מילון ה-PageRank ישירות מהבאקט (ללא שמירה לדיסק).
-    """
     print("Loading PageRank from Bucket...")
     client = storage.Client()
     bucket = client.bucket(bucket_name)
@@ -122,19 +106,14 @@ def load_pagerank(bucket_name, remote_path):
 
 
 def get_titles_batch(doc_ids):
-    """
-    מקבל רשימה של מזהי מסמכים ומחזיר מילון של {id: title} מתוך ה-SQLite.
-    """
     if not doc_ids:
         return {}
 
     titles_map = {}
     try:
-        # חיבור למסד הנתונים
         conn = sqlite3.connect(LOCAL_ID2TITLE_PATH)
         cursor = conn.cursor()
 
-        # בניית השאילתה עם Placeholders
         placeholders = ','.join(['?'] * len(doc_ids))
 
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
@@ -145,7 +124,6 @@ def get_titles_batch(doc_ids):
 
         table_name = tables[0][0]
 
-        # שאילתה לשליפת הכותרות (ממירים למחרוזת אם צריך)
         query = f"SELECT id, title FROM {table_name} WHERE id IN ({placeholders})"
         cursor.execute(query, tuple(doc_ids))
 
@@ -160,7 +138,6 @@ def get_titles_batch(doc_ids):
     return titles_map
 
 
-# טוקניזציה (זהה למטלה 1)
 RE_WORD = re.compile(r"""[\#\@\w](['\-]?\w){2,24}""", re.UNICODE)
 stopwords_frozen = frozenset(
     ['during', 'as', 'whom', 'no', 'so', 'shouldn\'t', 'she\'s', 'were', 'needn', 'then', 'on', 'should\'ve', 'once',
@@ -208,7 +185,7 @@ class BM25_from_index:
                 pass
         return idf
 
-    def search(self, query, N=100):
+    def search(self, query, N=100, start_time=None, timeout_sec=30):
         self.idf = self.calc_idf(query)
         candidates_scores = defaultdict(float)
 
@@ -220,6 +197,10 @@ class BM25_from_index:
                     file_requests[filename].append((term, offset))
 
         for filename, requests in file_requests.items():
+            if start_time and (time() - start_time > timeout_sec):
+                print(f"Timeout reached ({timeout_sec}s). Returning partial results.", flush=True)
+                break
+
             full_path = os.path.join(LOCAL_BODY_INDEX_DIR, filename)
             try:
                 with open(full_path, 'rb') as f:
@@ -234,7 +215,6 @@ class BM25_from_index:
             except FileNotFoundError:
                 continue
 
-        # מחזירים את כל המועמדים כדי שנוכל לנרמל אותם בחוץ
         return sorted(candidates_scores.items(), key=lambda item: item[1], reverse=True)
 
     def _score(self, term, doc_id, freq):
@@ -253,47 +233,36 @@ setup_swap_memory()
 idx_body = None
 pr_dict = {}
 
-# הטעינה מתבצעת רק כשהאפליקציה עולה
 print("Starting up application...", flush=True)
 
-# 2. הורדת הקבצים מהבאקט
 try:
-    # הורדת האינדקס
     if not os.path.exists(LOCAL_BODY_INDEX_DIR) or not os.listdir(LOCAL_BODY_INDEX_DIR):
         print("Downloading index files...", flush=True)
         download_index_from_bucket(BUCKET_NAME, REMOTE_BODY_INDEX_DIR, LOCAL_BODY_INDEX_DIR)
     else:
         print("Index files found locally, skipping download.", flush=True)
 
-    # הורדת ה-SQLite (ID to Title)
     download_file_from_bucket(BUCKET_NAME, REMOTE_ID2TITLE_FILE, LOCAL_ID2TITLE_PATH)
 
 except Exception as e:
     print(f"CRITICAL ERROR downloading files: {e}", flush=True)
 
-# 3. טעינת האינדקס לזיכרון
 print("Loading Body Index to memory...", flush=True)
 try:
     idx_body = InvertedIndex.read_index(base_dir=LOCAL_BODY_INDEX_DIR, name='index')
-
-    # --- בדיקות שפיות קריטיות ---
     print(f"SUCCESS: Body Index Loaded.", flush=True)
 
 except Exception as e:
     print(f"CRITICAL ERROR loading Body Index: {e}", flush=True)
     idx_body = None
 
-# 4. טעינת PageRank
 try:
     pr_dict = load_pagerank(BUCKET_NAME, REMOTE_PR_FILE)
     print("PageRank Loaded.")
 except Exception as e:
     print(f"Error loading PageRank: {e}")
 
-# =========================================================================
-# ROUTES
-# =========================================================================
-# חישוב המקסימום של ה-PageRank פעם אחת (גלובלי) כדי לנרמל
+
 max_pr = 1.0
 if pr_dict:
     max_pr = max(pr_dict.values())
@@ -301,6 +270,8 @@ if pr_dict:
 
 @app.route("/search")
 def search():
+    req_start_time = time()
+
     res = []
     query = request.args.get('query', '')
     if len(query) == 0:
@@ -311,13 +282,12 @@ def search():
     if idx_body:
         bm25 = BM25_from_index(idx_body)
 
-        # 1. קבלת כל המועמדים (ללא הגבלת N בשלב ראשון כדי למצוא מקסימום אמיתי)
-        candidates = bm25.search(query_tokens, N=1000)
+        candidates = bm25.search(query_tokens, N=1000, start_time=req_start_time, timeout_sec=30)
 
         if not candidates:
             return jsonify([])
 
-        max_bm25_score = candidates[0][1]  # הרשימה ממוינת, הראשון הוא הגבוה ביותר
+        max_bm25_score = candidates[0][1]
         if max_bm25_score == 0: max_bm25_score = 1
 
         final_results = []
@@ -329,31 +299,20 @@ def search():
             w_bm25 = 0.9
             w_pagerank = 0.1
 
-        # לוקחים רק את ה-100 הכי טובים מה-BM25
         top_candidates = candidates[:100]
 
         for doc_id, score in top_candidates:
-            # נירמול BM25 לטווח 0-1
             norm_bm25 = score / max_bm25_score
-
-            # נירמול PageRank לטווח 0-1
             pr_val = pr_dict.get(doc_id, 0)
             norm_pr = pr_val / max_pr
-
-            # שילוב חכם
             new_score = (w_bm25 * norm_bm25) + (w_pagerank * norm_pr)
             final_results.append((doc_id, new_score))
 
         final_results.sort(key=lambda x: x[1], reverse=True)
 
-        # 1. איסוף כל ה-IDs שצריך להם כותרת
         doc_ids_to_fetch = [doc_id for doc_id, score in final_results]
-
-        # 2. שליפת הכותרות מהדאטה-בייס המקומי
         titles_map = get_titles_batch(doc_ids_to_fetch)
 
-        # 3. יצירת הרשימה הסופית (id, title)
-        # אם אין כותרת, נחזיר את ה-ID כמחרוזת כברירת מחדל
         res = [(str(doc_id), titles_map.get(doc_id, str(doc_id))) for doc_id, score in final_results]
 
         return jsonify(res)
@@ -401,4 +360,4 @@ def run(**options):
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080, debug=True)
+    app.run(host='0.0.0.0', port=8080, debug=False)
