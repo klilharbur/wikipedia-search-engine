@@ -347,16 +347,19 @@ def get_pagerank():
 
 @app.route("/get_pageview", methods=['POST'])
 def get_pageview():
+    return jsonify([])
+
+
+
+def run(**options):
     res = []
     wiki_ids = request.get_json()
     if len(wiki_ids) == 0:
         return jsonify(res)
-    res = [0 for _ in wiki_ids]
+    # BEGIN SOLUTION
+
+    # END SOLUTION
     return jsonify(res)
-
-
-def run(**options):
-    app.run(**options)
 
 
 if __name__ == '__main__':
